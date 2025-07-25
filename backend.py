@@ -11,25 +11,26 @@ import os
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Generator, List
+from datetime import datetime, timezone  # إضافة timezone
 
 app = FastAPI(title="Financial Insights API", description="API for user authentication and financial data")
 
-
+# إعداد CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
+# إعداد قاعدة البيانات
 DATABASE_URL = "sqlite:///./users.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-
+# تعريف النماذج (Tables)
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
@@ -40,9 +41,11 @@ class User(Base):
 
 class Suggestion(Base):
     __tablename__ = "suggestions"
+    __table_args__ = {'extend_existing': True}  # إصلاح InvalidRequestError
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, index=True)
     suggestion = Column(Text, nullable=False)
+    created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())  # إصلاح DeprecationWarning
 
 class Evaluation(Base):
     __tablename__ = "evaluations"
@@ -50,25 +53,29 @@ class Evaluation(Base):
     username = Column(String, index=True)
     report = Column(Text, nullable=False)
     quality = Column(Integer, nullable=False)
+    created_at = Column(String, default=lambda: datetime.now(timezone.utc).isoformat())  # إصلاح DeprecationWarning
 
-
+# تهيئة قاعدة البيانات
 def init_db():
     try:
+        # إنشاء الجداول إذا لم تكن موجودة
         Base.metadata.create_all(bind=engine)
         
         with engine.connect() as connection:
-           
+            # التحقق من وجود عمود role
             result = connection.execute("PRAGMA table_info(users)")
             columns = [col['name'] for col in result.fetchall()]
             if 'role' not in columns:
                 connection.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'Regular User'")
                 print("Added 'role' column to users table")
+            
+            # التحقق من وجود عمود email
             if 'email' not in columns:
                 connection.execute("ALTER TABLE users ADD COLUMN email TEXT")
-              
                 connection.execute("UPDATE users SET email = username || '@default.com' WHERE email IS NULL")
                 print("Added 'email' column to users table and set default emails")
-          
+            
+            # التأكد من أن عمود email غير قابل للقيم الفارغة
             connection.execute("CREATE TABLE temp_users AS SELECT id, username, email, hashed_password, role FROM users")
             connection.execute("DROP TABLE users")
             connection.execute("""
@@ -83,12 +90,13 @@ def init_db():
             connection.execute("INSERT INTO users SELECT * FROM temp_users")
             connection.execute("DROP TABLE temp_users")
             print("Ensured 'email' column is NOT NULL")
+            
     except Exception as e:
         print(f"Error initializing database: {str(e)}")
 
-init_db() 
+init_db()
 
-
+# إعدادات الأمان
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
@@ -105,7 +113,7 @@ def get_db() -> Generator[Session, None, None]:
     finally:
         db.close()
 
-
+# نماذج Pydantic
 class UserCreate(BaseModel):
     username: str
     email: str
@@ -130,7 +138,7 @@ class EvaluationCreate(BaseModel):
     report: str
     quality: int
 
-
+# الوظائف (Endpoints)
 @app.post("/register")
 async def register(
     username: str = Form(...),
@@ -160,7 +168,6 @@ async def register(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Registration error: {str(e)}")
-
 
 @app.post("/login")
 async def login(username: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
@@ -213,7 +220,6 @@ async def delete_user(username: str, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error deleting user: {str(e)}")
-
 
 @app.get("/data/cleaned")
 async def get_cleaned_data():
